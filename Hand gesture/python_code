@@ -1,1 +1,508 @@
+import cv2
+import mediapipe as mp
+import serial
+import time
+import math
 
+# =========================================================
+# SERIAL SETUP
+# =========================================================
+
+ser = serial.Serial('/dev/ttyUSB0', 9600)
+time.sleep(2)
+
+# =========================================================
+# MEDIAPIPE TASKS SETUP
+# =========================================================
+
+BaseOptions = mp.tasks.BaseOptions
+HandLandmarker = mp.tasks.vision.HandLandmarker
+HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
+VisionRunningMode = mp.tasks.vision.RunningMode
+
+model_path = "hand_landmarker.task"
+
+options = HandLandmarkerOptions(
+    base_options=BaseOptions(model_asset_path=model_path),
+    running_mode=VisionRunningMode.VIDEO,
+    num_hands=1
+)
+
+landmarker = HandLandmarker.create_from_options(options)
+
+# =========================================================
+# SERVO CALIBRATION
+# =========================================================
+
+indexOpen = 180
+indexClose = 0
+
+middleOpen = 0
+middleClose = 180
+
+pinkyOpen = 70
+pinkyClose = 180
+
+ringOpen = 130
+ringClose = 10
+
+thumbOpen = 120
+thumbClose = 80
+
+# =========================================================
+# WRIST CALIBRATION
+# DO NOT CHANGE
+# =========================================================
+
+wristCenter = 90
+wristLeft = 45
+wristRight = 135
+
+# =========================================================
+# CURRENT VALUES
+# =========================================================
+
+currentIndexRatio = 0.0
+
+INDEX_SMOOTHING = 0.35
+
+# =========================================================
+# NORMALIZE FUNCTION
+# =========================================================
+
+def normalize(value, min_value, max_value):
+
+    if max_value == min_value:
+        return 0.0
+
+    ratio = (value - min_value) / (max_value - min_value)
+
+    ratio = max(0.0, min(1.0, ratio))
+
+    return ratio
+
+
+# =========================================================
+# MAP FINGER
+# =========================================================
+
+def map_finger(ratio, open_angle, close_angle):
+
+    ratio = max(0.0, min(1.0, ratio))
+
+    # Reverse because large distance means finger is open
+    ratio = 1.0 - ratio
+
+    angle = open_angle + (close_angle - open_angle) * ratio
+
+    return int(angle)
+
+
+# =========================================================
+# CALCULATE JOINT ANGLE
+# =========================================================
+
+def calculate_joint_angle(a, b, c):
+
+    ba_x = a.x - b.x
+    ba_y = a.y - b.y
+    ba_z = a.z - b.z
+
+    bc_x = c.x - b.x
+    bc_y = c.y - b.y
+    bc_z = c.z - b.z
+
+    dot_product = (
+        ba_x * bc_x +
+        ba_y * bc_y +
+        ba_z * bc_z
+    )
+
+    magnitude_ba = math.sqrt(
+        ba_x * ba_x +
+        ba_y * ba_y +
+        ba_z * ba_z
+    )
+
+    magnitude_bc = math.sqrt(
+        bc_x * bc_x +
+        bc_y * bc_y +
+        bc_z * bc_z
+    )
+
+    if magnitude_ba == 0 or magnitude_bc == 0:
+        return 0
+
+    cosine_angle = dot_product / (
+        magnitude_ba * magnitude_bc
+    )
+
+    cosine_angle = max(-1.0, min(1.0, cosine_angle))
+
+    angle = math.degrees(
+        math.acos(cosine_angle)
+    )
+
+    return angle
+
+
+# =========================================================
+# CAMERA
+# =========================================================
+
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("ERROR: Camera could not be opened")
+    exit()
+
+# =========================================================
+# MAIN LOOP
+# =========================================================
+
+start_time = time.time()
+
+while True:
+
+    ret, frame = cap.read()
+
+    if not ret:
+        print("ERROR: Cannot read camera")
+        break
+
+    # Mirror image
+    frame = cv2.flip(frame, 1)
+
+    # Convert BGR to RGB
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Create MediaPipe image
+    mp_image = mp.Image(
+        image_format=mp.ImageFormat.SRGB,
+        data=rgb
+    )
+
+    # Timestamp
+    timestamp_ms = int(
+        (time.time() - start_time) * 1000
+    )
+
+    # Detect hand
+    result = landmarker.detect_for_video(
+        mp_image,
+        timestamp_ms
+    )
+
+    # =====================================================
+    # HAND DETECTED
+    # =====================================================
+
+    if result.hand_landmarks:
+
+        lm = result.hand_landmarks[0]
+
+        # =================================================
+        # WRIST / FOREARM
+        # KEEPING ORIGINAL WRIST LOGIC
+        # =================================================
+
+        wrist = lm[0]
+        middle_mcp = lm[9]
+
+        wrist_x = wrist.x
+        middle_x = middle_mcp.x
+
+        wrist_difference = middle_x - wrist_x
+
+        if wrist_difference < -0.05:
+
+            wrist_angle = wristLeft
+
+        elif wrist_difference > 0.05:
+
+            wrist_angle = wristRight
+
+        else:
+
+            wrist_angle = wristCenter
+
+        # =================================================
+        # INDEX FINGER
+        # SAME NORMALIZATION METHOD AS OTHER FINGERS
+        # =================================================
+
+        index_tip = lm[8]
+
+        # Distance from index fingertip to wrist
+        index_raw = abs(
+            index_tip.y - wrist.y
+        )
+
+        # Normalize index movement
+        index_ratio = normalize(
+            index_raw,
+            0.05,
+            0.25
+        )
+
+        # Smooth index movement
+        currentIndexRatio = (
+            currentIndexRatio * (1 - INDEX_SMOOTHING)
+            + index_ratio * INDEX_SMOOTHING
+        )
+
+        index_angle = map_finger(
+            currentIndexRatio,
+            indexOpen,
+            indexClose
+        )
+
+        # =================================================
+        # MIDDLE FINGER
+        # =================================================
+
+        middle_tip = lm[12]
+
+        middle_raw = abs(
+            middle_tip.y - wrist.y
+        )
+
+        middle_ratio = normalize(
+            middle_raw,
+            0.08,
+            0.30
+        )
+
+        middle_angle = map_finger(
+            middle_ratio,
+            middleOpen,
+            middleClose
+        )
+
+        # =================================================
+        # RING FINGER
+        # =================================================
+
+        ring_tip = lm[16]
+
+        ring_raw = abs(
+            ring_tip.y - wrist.y
+        )
+
+        ring_ratio = normalize(
+            ring_raw,
+            0.07,
+            0.27
+        )
+
+        ring_angle = map_finger(
+            ring_ratio,
+            ringOpen,
+            ringClose
+        )
+
+        # =================================================
+        # PINKY FINGER
+        # =================================================
+
+        pinky_tip = lm[20]
+
+        pinky_raw = abs(
+            pinky_tip.y - wrist.y
+        )
+
+        pinky_ratio = normalize(
+            pinky_raw,
+            0.06,
+            0.25
+        )
+
+        pinky_angle = map_finger(
+            pinky_ratio,
+            pinkyOpen,
+            pinkyClose
+        )
+
+        # =================================================
+        # THUMB
+        # =================================================
+
+        thumb_tip = lm[4]
+
+        thumb_raw = abs(
+            thumb_tip.x - wrist.x
+        )
+
+        thumb_ratio = normalize(
+            thumb_raw,
+            0.03,
+            0.22
+        )
+
+        thumb_angle = map_finger(
+            thumb_ratio,
+            thumbOpen,
+            thumbClose
+        )
+
+        # =================================================
+        # LIMIT SERVO ANGLES
+        # =================================================
+
+        index_angle = max(
+            0,
+            min(180, index_angle)
+        )
+
+        middle_angle = max(
+            0,
+            min(180, middle_angle)
+        )
+
+        ring_angle = max(
+            10,
+            min(130, ring_angle)
+        )
+
+        pinky_angle = max(
+            70,
+            min(180, pinky_angle)
+        )
+
+        thumb_angle = max(
+            80,
+            min(120, thumb_angle)
+        )
+
+        wrist_angle = max(
+            45,
+            min(135, wrist_angle)
+        )
+
+        # =================================================
+        # SEND DATA TO ARDUINO
+        # =================================================
+
+        command = (
+            f"I{index_angle} "
+            f"M{middle_angle} "
+            f"P{pinky_angle} "
+            f"R{ring_angle} "
+            f"T{thumb_angle} "
+            f"W{wrist_angle}\n"
+        )
+
+        ser.write(command.encode())
+
+        # =================================================
+        # DISPLAY VALUES
+        # =================================================
+
+        cv2.putText(
+            frame,
+            f"Index: {index_angle}",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"Middle: {middle_angle}",
+            (20, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"Ring: {ring_angle}",
+            (20, 100),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"Pinky: {pinky_angle}",
+            (20, 130),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"Thumb: {thumb_angle}",
+            (20, 160),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"Wrist: {wrist_angle}",
+            (20, 190),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"Index Ratio: {currentIndexRatio:.2f}",
+            (20, 220),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 0),
+            2
+        )
+
+    else:
+
+        cv2.putText(
+            frame,
+            "No Hand Detected",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 0, 255),
+            2
+        )
+
+    # =====================================================
+    # SHOW CAMERA
+    # =====================================================
+
+    cv2.imshow(
+        "Hand Gesture Robotic Hand",
+        frame
+    )
+
+    # Press Q to quit
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+
+# =========================================================
+# CLEANUP
+# =========================================================
+
+cap.release()
+cv2.destroyAllWindows()
+
+ser.close()
+
+landmarker.close()
+
+print("Program stopped.")
