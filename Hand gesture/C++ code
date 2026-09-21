@@ -1,1 +1,101 @@
 
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
+
+#define MIN_PULSE 150
+#define MAX_PULSE 600
+
+void setup()
+{
+  Serial.begin(115200);
+
+  Wire.begin();
+  pwm.begin();
+  pwm.setPWMFreq(50);
+
+  delay(1000);
+
+  // ALL SERVOS CENTER
+  pwm.setPWM(0, 0, 375);
+  pwm.setPWM(1, 0, 375);
+  pwm.setPWM(2, 0, 375);
+  pwm.setPWM(3, 0, 375);
+
+  // GRIPPER OPEN
+  pwm.setPWM(4, 0, 150);
+
+  delay(2000);
+}
+
+void loop()
+{
+  // -------------------------
+  // 1. GRIPPER OPEN
+  // -------------------------
+  Serial.println("GRIPPER OPEN");
+  pwm.setPWM(4, 0, 150);
+  delay(1000);
+
+
+  // -------------------------
+  // 2. TURN BASE TO POINT
+  // -------------------------
+  Serial.println("TURNING");
+
+  pwm.setPWM(0, 0, 300);
+  delay(2000);
+
+
+  // -------------------------
+  // 3. LOWER ARM
+  // -------------------------
+  Serial.println("LOWERING");
+
+  pwm.setPWM(1, 0, 300);
+  delay(1000);
+
+  pwm.setPWM(2, 0, 450);
+  delay(1500);
+
+
+  // -------------------------
+  // 4. CLOSE GRIPPER
+  // -------------------------
+  Serial.println("GRIPPER CLOSE");
+
+  pwm.setPWM(4, 0, 500);
+  delay(1500);
+
+
+  // -------------------------
+  // 5. LIFT
+  // -------------------------
+  Serial.println("LIFTING");
+
+  pwm.setPWM(1, 0, 350);
+  delay(1000);
+
+  pwm.setPWM(2, 0, 400);
+  delay(1500);
+
+
+  // -------------------------
+  // 6. RETURN BASE
+  // -------------------------
+  Serial.println("RETURN");
+
+  pwm.setPWM(0, 0, 375);
+  delay(2000);
+
+
+  // -------------------------
+  // 7. OPEN GRIPPER
+  // -------------------------
+  Serial.println("OPEN");
+
+  pwm.setPWM(4, 0, 150);
+  delay(2000);
+}
+
